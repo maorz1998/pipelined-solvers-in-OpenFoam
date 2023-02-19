@@ -70,3 +70,4 @@ libtorch*.zip*
 __pycache__/
 lib/
 bin/
+.vscode/
