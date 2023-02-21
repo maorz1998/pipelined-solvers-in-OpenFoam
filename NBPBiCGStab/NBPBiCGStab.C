@@ -237,11 +237,6 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
 
             if (solverPerf.checkConvergence(tolerance_, relTol_))
             {
-                for (label cell=0; cell<nCells; cell++)
-                {
-                    psiPtr[cell] += alpha*pMPtr[cell];
-                }
-
                 solverPerf.nIterations()++;
 
                 return solverPerf;
