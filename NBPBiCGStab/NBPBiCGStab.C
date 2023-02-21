@@ -183,10 +183,33 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
                 qMPtr[cell] = rMPtr[cell] - alpha*sMPtr[cell];
                 yAPtr[cell] = wAPtr[cell] - alpha*zAPtr[cell];
             }
-            // check convergence
-            solverPerf.finalResidual() =
-                gSumMag(qA, matrix().mesh().comm())/normFactor;
 
+            // --- overlap comm and comp
+            // 1. no blocking reduction 
+            double allredSend1[3];
+            double allredRecv1[3];
+            allredSend1[0] = sumProd(qA, yA);
+            allredSend1[1] = sumSqr(yA);
+            allredSend1[2] = sumMag(qA);
+            MPI_Request reqs1;
+            MPI_Iallreduce
+            (
+                &allredSend1,
+                &allredRecv1,
+                3,
+                MPI_DOUBLE,
+                MPI_SUM,
+                PstreamGlobals::MPICommunicators_[0],
+                &reqs1
+            );
+            // 2. SPMV
+            preconPtr->precondition(zM, zA, cmpt);
+            matrix_.Amul(vA, zM, interfaceBouCoeffs_, interfaces_, cmpt);
+            // 3. MPI_wait
+            MPI_Wait(&reqs1, MPI_STATUS_IGNORE);
+
+            // check convergence
+            solverPerf.finalResidual() = allredRecv1[2] / normFactor;
             if (solverPerf.checkConvergence(tolerance_, relTol_))
             {
                 for (label cell=0; cell<nCells; cell++)
@@ -198,29 +221,6 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
 
                 return solverPerf;
             }
-
-            // --- overlap comm and comp
-            // 1. no blocking reduction 
-            double allredSend1[2];
-            double allredRecv1[2];
-            allredSend1[0] = sumProd(qA, yA);
-            allredSend1[1] = sumSqr(yA);
-            MPI_Request reqs1;
-            MPI_Iallreduce
-            (
-                &allredSend1,
-                &allredRecv1,
-                2,
-                MPI_DOUBLE,
-                MPI_SUM,
-                PstreamGlobals::MPICommunicators_[0],
-                &reqs1
-            );
-            // 2. SPMV
-            preconPtr->precondition(zM, zA, cmpt);
-            matrix_.Amul(vA, zM, interfaceBouCoeffs_, interfaces_, cmpt);
-            // 3. MPI_wait
-            MPI_Wait(&reqs1, MPI_STATUS_IGNORE);
             
             omega = allredRecv1[0] / allredRecv1[1];
 
@@ -231,31 +231,22 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
                 rMPtr[cell] = qMPtr[cell] - omega*(wMPtr[cell] - alpha*zMPtr[cell]);
                 wAPtr[cell] = yAPtr[cell] - omega*(tAPtr[cell] - alpha*vAPtr[cell]);
             }
-            // check convergence
-            solverPerf.finalResidual() =
-                gSumMag(rA, matrix().mesh().comm())/normFactor;
-
-            if (solverPerf.checkConvergence(tolerance_, relTol_))
-            {
-                solverPerf.nIterations()++;
-
-                return solverPerf;
-            }
 
             // --- overlap comm and comp
             // 1. no blocking reduction 
-            double allredSend2[4];
-            double allredRecv2[4];
+            double allredSend2[5];
+            double allredRecv2[5];
             allredSend2[0] = sumProd(r0, rA);
             allredSend2[1] = sumProd(r0, wA);
             allredSend2[2] = sumProd(r0, sA);
             allredSend2[3] = sumProd(r0, zA);
+            allredSend2[4] = sumMag(rA);
             MPI_Request reqs2;
             MPI_Iallreduce
             (
                 &allredSend2,
                 &allredRecv2,
-                4,
+                5,
                 MPI_DOUBLE,
                 MPI_SUM,
                 PstreamGlobals::MPICommunicators_[0],
@@ -266,6 +257,16 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
             matrix_.Amul(tA, wM, interfaceBouCoeffs_, interfaces_, cmpt);
             // 3. MPI_wait
             MPI_Wait(&reqs2, MPI_STATUS_IGNORE);
+
+            // check convergence
+            solverPerf.finalResidual() = allredRecv2[4]/normFactor;
+
+            if (solverPerf.checkConvergence(tolerance_, relTol_))
+            {
+                solverPerf.nIterations()++;
+
+                return solverPerf;
+            }
 
             beta = (alpha/omega)*allredRecv2[0]/r0rA;
             alpha = allredRecv2[0]/(allredRecv2[1] + beta*allredRecv2[2] - beta*omega*allredRecv2[3]);
