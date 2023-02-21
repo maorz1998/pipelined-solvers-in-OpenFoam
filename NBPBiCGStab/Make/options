@@ -1,5 +1,9 @@
+-include $(GENERAL_RULES)/mplibType
+
 EXE_INC = \
-    -I$(OBJECTS_DIR)
+    $(PFLAGS) $(PINC) \
+    -I$(OBJECTS_DIR) \
+    -I$(LIB_SRC)/Pstream/mpi
 
 LIB_LIBS = \
     $(FOAM_LIBBIN)/libOSspecific.o \

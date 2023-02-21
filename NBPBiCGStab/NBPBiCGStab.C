@@ -83,25 +83,22 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
 
     scalar* __restrict__ psiPtr = psi.begin();
 
-    scalarField pA(nCells);
-    scalar* __restrict__ pAPtr = pA.begin();
+    scalarField pA(nCells,0);
 
-    scalarField yA(nCells);
+    scalarField yA(nCells,0);
     scalar* __restrict__ yAPtr = yA.begin();
 
-    scalarField rM(nCells);
+    scalarField rM(nCells,0);
     scalar* __restrict__ rMPtr = rM.begin();
 
-    scalarField wA(nCells);
+    scalarField wA(nCells,0);
     scalar* __restrict__ wAPtr = wA.begin();
 
-    scalarField wM(nCells);
+    scalarField wM(nCells,0);
     scalar* __restrict__ wMPtr = wM.begin();
 
-    scalarField tA(nCells);
+    scalarField tA(nCells,0);
     scalar* __restrict__ tAPtr = tA.begin();
-
-    scalar alpha, beta;
 
     // --- Calculate A.psi
     matrix_.Amul(yA, psi, interfaceBouCoeffs_, interfaces_, cmpt);
@@ -115,6 +112,12 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
     // --- Calculate normalisation factor
     const scalar normFactor = this->normFactor(psi, source, yA, pA);
 
+    // --- Calculate normalised residual norm
+    solverPerf.initialResidual() =
+        gSumMag(rA, matrix().mesh().comm())
+       /normFactor;
+    solverPerf.finalResidual() = solverPerf.initialResidual();
+
     // --- Select and construct the preconditioner
     autoPtr<lduMatrix::preconditioner> preconPtr =
     lduMatrix::preconditioner::New
@@ -125,24 +128,15 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
     preconPtr->precondition(rM, rA, cmpt);
     matrix_.Amul(wA, rM, interfaceBouCoeffs_, interfaces_, cmpt);
     preconPtr->precondition(wM, wA, cmpt);
+    matrix_.Amul(tA, wM, interfaceBouCoeffs_, interfaces_, cmpt);
 
     // initialize alpha & beta
     const scalar rArA = gSumSqr(rA, matrix().mesh().comm());
-    scalar algha = rArA/gSumProd(rA, wA, matrix().mesh().comm());
+    scalar alpha = rArA/gSumProd(rA, wA, matrix().mesh().comm());
     scalar beta = 0;
     scalar omega = 0;
     scalar r0rA = rArA;
 
-    if (lduMatrix::debug >= 2)
-    {
-        Info<< "   Normalisation factor = " << normFactor << endl;
-    }
-
-    // --- Calculate normalised residual norm
-    solverPerf.initialResidual() =
-        gSumMag(rA, matrix().mesh().comm())
-       /normFactor;
-    solverPerf.finalResidual() = solverPerf.initialResidual();
 
     // --- Check convergence, solve if not converged
     if
@@ -152,32 +146,29 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
     )
     {
         // Initialize parameters
-        scalarField pM(nCells);
+        scalarField pM(nCells,0);
         scalar* __restrict__ pMPtr = pM.begin();
 
-        scalarField sM(nCells);
+        scalarField sM(nCells,0);
         scalar* __restrict__ sMPtr = sM.begin();
 
-        scalarField sA(nCells);
+        scalarField sA(nCells,0);
         scalar* __restrict__ sAPtr = sA.begin();
 
-        scalarField zA(nCells);
+        scalarField zA(nCells,0);
         scalar* __restrict__ zAPtr = zA.begin();
 
-        scalarField zM(nCells);
+        scalarField zM(nCells,0);
         scalar* __restrict__ zMPtr = zM.begin();
 
-        scalarField vA(nCells);
+        scalarField vA(nCells,0);
         scalar* __restrict__ vAPtr = vA.begin();
 
-        scalarField qA(nCells);
+        scalarField qA(nCells,0);
         scalar* __restrict__ qAPtr = qA.begin();
 
-        scalarField qM(nCells);
+        scalarField qM(nCells,0);
         scalar* __restrict__ qMPtr = qM.begin();
-
-        // --- Store initial residual
-        const scalarField rA0(rA);
 
         // --- Solver iteration
         do
@@ -210,34 +201,34 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
 
             // --- overlap comm and comp
             // 1. no blocking reduction 
-            int allredSend1[2];
-            int allredRecv1[2];
+            double allredSend1[2];
+            double allredRecv1[2];
             allredSend1[0] = sumProd(qA, yA);
             allredSend1[1] = sumSqr(yA);
-            MPI_Request reqs;
+            MPI_Request reqs1;
             MPI_Iallreduce
             (
                 &allredSend1,
                 &allredRecv1,
                 2,
-                MPI_SCALAR,
+                MPI_DOUBLE,
                 MPI_SUM,
-                Pstream::msgType(),
-                matrix().mesh().comm(),
-                &reqs
+                PstreamGlobals::MPICommunicators_[0],
+                &reqs1
             );
             // 2. SPMV
             preconPtr->precondition(zM, zA, cmpt);
             matrix_.Amul(vA, zM, interfaceBouCoeffs_, interfaces_, cmpt);
             // 3. MPI_wait
-            MPI_Wait(&reqs, MPI_STATUS_IGNORE);
+            MPI_Wait(&reqs1, MPI_STATUS_IGNORE);
             
-            omega = allredSend1[0] / allredSend1[1];
+            omega = allredRecv1[0] / allredRecv1[1];
+
             for (label cell=0; cell<nCells; cell++)
             {
                 psiPtr[cell] += alpha*pMPtr[cell] + omega*qMPtr[cell];
                 rAPtr[cell] = qAPtr[cell] - omega*yAPtr[cell];
-                rMPtr[cell] = qMPtr[cell] - omega*(qMPtr[cell] - alpha*zMPtr[cell]);
+                rMPtr[cell] = qMPtr[cell] - omega*(wMPtr[cell] - alpha*zMPtr[cell]);
                 wAPtr[cell] = yAPtr[cell] - omega*(tAPtr[cell] - alpha*vAPtr[cell]);
             }
             // check convergence
@@ -258,29 +249,28 @@ Foam::solverPerformance Foam::NBPBiCGStab::solve
 
             // --- overlap comm and comp
             // 1. no blocking reduction 
-            int allredSend2[4];
-            int allredRecv2[4];
+            double allredSend2[4];
+            double allredRecv2[4];
             allredSend2[0] = sumProd(r0, rA);
             allredSend2[1] = sumProd(r0, wA);
             allredSend2[2] = sumProd(r0, sA);
             allredSend2[3] = sumProd(r0, zA);
-            MPI_Request reqs;
+            MPI_Request reqs2;
             MPI_Iallreduce
             (
                 &allredSend2,
                 &allredRecv2,
                 4,
-                MPI_SCALAR,
+                MPI_DOUBLE,
                 MPI_SUM,
-                Pstream::msgType(),
-                matrix().mesh().comm(),
-                &reqs
+                PstreamGlobals::MPICommunicators_[0],
+                &reqs2
             );
             // 2. SPMV
             preconPtr->precondition(wM, wA, cmpt);
             matrix_.Amul(tA, wM, interfaceBouCoeffs_, interfaces_, cmpt);
             // 3. MPI_wait
-            MPI_Wait(&reqs, MPI_STATUS_IGNORE);
+            MPI_Wait(&reqs2, MPI_STATUS_IGNORE);
 
             beta = (alpha/omega)*allredRecv2[0]/r0rA;
             alpha = allredRecv2[0]/(allredRecv2[1] + beta*allredRecv2[2] - beta*omega*allredRecv2[3]);

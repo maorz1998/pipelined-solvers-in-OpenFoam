@@ -52,6 +52,7 @@ SourceFiles
 #define NBPBiCGStab_H
 
 #include "lduMatrix.H"
+#include "PstreamGlobals.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
