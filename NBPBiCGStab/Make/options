@@ -6,6 +6,5 @@ EXE_INC = \
     -I$(LIB_SRC)/Pstream/mpi
 
 LIB_LIBS = \
-    $(FOAM_LIBBIN)/libOSspecific.o \
     -L$(FOAM_LIBBIN)/dummy -lPstream \
     -lz
